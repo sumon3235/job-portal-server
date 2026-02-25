@@ -9,7 +9,7 @@ const app = express();
 // Midleware
 app.use(
   cors({
-    origin: ["http://localhost:5173"],
+    origin: ["http://localhost:5174", "http://localhost:5173"],
     credentials: true,
   }),
 );
@@ -54,33 +54,38 @@ async function run() {
         .cookie("token", token, {
           httpOnly: true,
           secure: false,
-          sameSite: 'lax'
+          sameSite: "lax",
         })
         .send({ success: true });
     });
 
-    const logger = (req, res, next) => {
-      console.log('logger call')
-      next();
-    }
+    // clear token 
+    app.post('/logout', (req, res) => {
+      res.clearCookie('token', {
+        httpOnly: true,
+        secure: false,
+        sameSite: 'lax'
+      })
+      .send({success: true})
+    })
 
+    // verify a token
     const verifyToken = (req, res, next) => {
-      console.log('token calling')
       const token = req?.cookies?.token;
-
-      if(!token) {
-        return res.status(401).send({message: 'unAuthorized token'})
+      if (!token) {
+        return res.status(401).send({ message: "unAuthorized token" });
       }
 
-      jwt.verify(token, process.env.JWT_SECRET, (error,decode) => {
+      jwt.verify(token, process.env.JWT_SECRET, (error, decode) => {
         if (error) {
-          res.status(401).send('UnAuthorized Token')
+        return  res.status(401).send("UnAuthorized Token");
         }
-      })
-      next();
-    }
+        req.user = decode;
+        next();
+      });
+    };
 
-    app.get("/jobs", logger, async (req, res) => {
+    app.get("/jobs", async (req, res) => {
       const email = req.query.email;
       let query = {};
       if (email) {
@@ -114,9 +119,9 @@ async function run() {
     app.get("/job-application", verifyToken, async (req, res) => {
       const email = req.query.email;
       const query = { applicant_email: email };
-      
-      console.log(req.cookies)
-
+      if (req.user.email !== req.query.email) {
+        return res.status(430).send({ message: "Forbidden" });
+      }
       const result = await jobApplication.find(query).toArray();
       for (const application of result) {
         const query1 = { _id: new ObjectId(application.job_id) };
