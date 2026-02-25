@@ -3,25 +3,30 @@ const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const cookieParser = require("cookie-parser");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+
 const port = process.env.PORT || 5000;
 const app = express();
 
-// Midleware
+// Middleware
 app.use(
   cors({
-    origin: ["http://localhost:5174", "http://localhost:5173"],
+    origin: [
+      "http://localhost:5173", 
+      "http://localhost:5174",
+      "https://job-portal-11371.web.app",
+      "https://job-portal-11371.firebaseapp.com",
+    ],
     credentials: true,
-  }),
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
 );
 app.use(express.json());
 app.use(cookieParser());
 
-// Database Code
-
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+// MongoDB Connection
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.5jgflna.mongodb.net/?appName=Cluster0`;
-
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -32,59 +37,56 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
-    // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!",
-    );
-
-    // job related apis
+    // Database Collections
     const jobCollection = client.db("job-portal").collection("jobs");
-    const jobApplication = client
-      .db("job-portal")
-      .collection("jobs_application");
+    const jobApplication = client.db("job-portal").collection("jobs_application");
 
-    // Json Web token
+    // --- Auth Related APIs (JWT) ---
     app.post("/jwt", async (req, res) => {
       const user = req.body;
-      const token = jwt.sign(user, process.env.JWT_SECRET, { expiresIn: "1h" });
+      const token = jwt.sign(user, process.env.JWT_SECRET, {
+        expiresIn: "10h",
+      });
+
       res
         .cookie("token", token, {
           httpOnly: true,
-          secure: false,
-          sameSite: "lax",
+          secure: process.env.NODE_ENV === "production", 
+          sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+          path: "/",
         })
         .send({ success: true });
     });
 
-    // clear token 
-    app.post('/logout', (req, res) => {
-      res.clearCookie('token', {
-        httpOnly: true,
-        secure: false,
-        sameSite: 'lax'
-      })
-      .send({success: true})
-    })
+    app.post("/logout", (req, res) => { //
+      res
+        .clearCookie("token", {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+          path: "/",
+        })
+        .send({ success: true });
+    });
 
-    // verify a token
+    // --- Middleware: Verify Token ---
     const verifyToken = (req, res, next) => {
       const token = req?.cookies?.token;
+      console.log(token)
       if (!token) {
-        return res.status(401).send({ message: "unAuthorized token" });
+        return res.status(401).send({ message: "UnAuthorized access" });
       }
 
       jwt.verify(token, process.env.JWT_SECRET, (error, decode) => {
         if (error) {
-        return  res.status(401).send("UnAuthorized Token");
+          return res.status(401).send({ message: "UnAuthorized access" });
         }
         req.user = decode;
         next();
       });
     };
 
+    // --- Job Related APIs ---
     app.get("/jobs", async (req, res) => {
       const email = req.query.email;
       let query = {};
@@ -109,7 +111,7 @@ async function run() {
       res.send(result);
     });
 
-    // job application
+    // --- Job Application APIs ---
     app.post("/job-application", async (req, res) => {
       const application = req.body;
       const result = await jobApplication.insertOne(application);
@@ -119,20 +121,24 @@ async function run() {
     app.get("/job-application", verifyToken, async (req, res) => {
       const email = req.query.email;
       const query = { applicant_email: email };
+
+      // Token email vs query email verification
       if (req.user.email !== req.query.email) {
-        return res.status(430).send({ message: "Forbidden" });
+        return res.status(403).send({ message: "Forbidden Access" });
       }
+
       const result = await jobApplication.find(query).toArray();
+      
+      // Fetching job details for each application
       for (const application of result) {
         const query1 = { _id: new ObjectId(application.job_id) };
         const job = await jobCollection.findOne(query1);
-
         if (job) {
           application.title = job.title;
-          ((application.company = job.company),
-            (application.company_logo = job.company_logo),
-            (application.location = job.location),
-            (application.category = job.category));
+          application.company = job.company;
+          application.company_logo = job.company_logo;
+          application.location = job.location;
+          application.category = job.category;
         }
       }
       res.send(result);
@@ -154,7 +160,7 @@ async function run() {
           status: data.status,
         },
       };
-      const result = await jobCollection.updateOne(query, updatedDoc);
+      const result = await jobApplication.updateOne(query, updatedDoc);
       res.send(result);
     });
 
@@ -164,17 +170,17 @@ async function run() {
       const result = await jobApplication.deleteOne(query);
       res.send(result);
     });
+
   } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
+    // client.close();
   }
 }
 run().catch(console.dir);
 
 app.get("/", (req, res) => {
-  res.send("Job Server Is Running");
+  res.send("Job Portal Server is running");
 });
 
 app.listen(port, () => {
-  console.log(`app is runnign port: ${port}`);
+  console.log(`Server is running on port: ${port}`);
 });
